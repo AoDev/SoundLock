@@ -7,6 +7,8 @@ enum Constants {
     enum Timing {
         static let saveDebounce: TimeInterval = 0.3
         static let btRecoveryDelays: [TimeInterval] = [0.5, 1.5, 3.5]
+        static let newDevicePromptDuration: TimeInterval = 5
+        static let wakePromptSuppression: TimeInterval = 10
     }
 
     enum UI {
@@ -27,6 +29,7 @@ enum Constants {
         static let guardEnabled = "guardEnabled"
         static let priorityOutputList = "priorityOutputList"
         static let priorityInputList = "priorityInputList"
+        static let promptOnNewOutputDevice = "promptOnNewOutputDevice"
     }
 
     enum SystemURL {

@@ -67,25 +67,31 @@ struct ContentView: View {
                 .padding(.horizontal, Theme.horizontalInset)
                 .padding(.top, 2)
 
-            HStack(spacing: 10) {
-                Image(systemName: "arrow.up.right.circle")
-                    .font(.system(size: Theme.rowIconSize))
-                    .foregroundColor(.secondary)
-                    .frame(width: Theme.rowIconFrame)
-                Text("Launch at login")
-                    .font(Theme.rowTitleFont)
-                Spacer()
-                Toggle("", isOn: Binding(
-                    get: { settings.launchAtLoginEnabled },
-                    set: { settings.launchAtLoginEnabled = $0 }
-                ))
+            settingsRow(systemImage: "arrow.up.right.circle", title: "Launch at login", isOn: Binding(
+                get: { settings.launchAtLoginEnabled },
+                set: { settings.launchAtLoginEnabled = $0 }
+            ))
+            settingsRow(systemImage: "bell.badge", title: "Ask to switch to new devices",
+                        isOn: $settings.promptOnNewOutputDevice)
+        }
+        .padding(.vertical, Theme.sectionVerticalPadding)
+    }
+
+    private func settingsRow(systemImage: String, title: String, isOn: Binding<Bool>) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.system(size: Theme.rowIconSize))
+                .foregroundColor(.secondary)
+                .frame(width: Theme.rowIconFrame)
+            Text(title)
+                .font(Theme.rowTitleFont)
+            Spacer()
+            Toggle("", isOn: isOn)
                 .toggleStyle(.switch)
                 .labelsHidden()
                 .controlSize(.small)
-            }
-            .padding(.horizontal, Theme.horizontalInset)
-            .frame(height: Theme.rowHeight)
         }
-        .padding(.vertical, Theme.sectionVerticalPadding)
+        .padding(.horizontal, Theme.horizontalInset)
+        .frame(height: Theme.rowHeight)
     }
 }

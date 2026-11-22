@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let mute = AudioMuteService()
     let settings = AppSettings()
     lazy var monitor = AudioDeviceMonitor(volume: volume, mute: mute, repository: repository)
+    private let newDevicePrompt = NewDevicePromptController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -44,7 +45,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover?.contentViewController = hc
         popover?.delegate = self
 
+        monitor.onNewOutputDevice = { [weak self] device in
+            self?.promptToSwitch(to: device)
+        }
         monitor.startMonitoring()
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
+            workspaceCenter.addObserver(self, selector: #selector(handleSystemSleep(_:)), name: name, object: nil)
+        }
+        for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
+            workspaceCenter.addObserver(self, selector: #selector(handleSystemWake(_:)), name: name, object: nil)
+        }
 
         DistributedNotificationCenter.default().addObserver(
             self,
@@ -55,6 +66,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if !launchedAsLoginItem() {
             showPopoverWhenStatusItemIsLaidOut()
         }
+    }
+
+    @objc private func handleSystemSleep(_ notification: Notification) {
+        monitor.promptsSuppressedUntil = .distantFuture
+        newDevicePrompt.dismiss()
+    }
+
+    @objc private func handleSystemWake(_ notification: Notification) {
+        monitor.promptsSuppressedUntil = Date().addingTimeInterval(Constants.Timing.wakePromptSuppression)
+    }
+
+    private func promptToSwitch(to device: AudioDevice) {
+        guard settings.promptOnNewOutputDevice else { return }
+        newDevicePrompt.prompt(for: device, monitor: monitor, below: statusItem?.button?.window?.frame)
     }
 
     private func showPopoverWhenStatusItemIsLaidOut(attemptsLeft: Int = 30) {
@@ -86,6 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         NotificationCenter.default.removeObserver(self)
         DistributedNotificationCenter.default().removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
         stopEventMonitors()
         closePopover(notification)
         monitor.stopMonitoring()
@@ -152,7 +178,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
             let popoverWindow = popover.contentViewController?.view.window
             let statusWindow = self.statusItem?.button?.window
-            if eventWindow === popoverWindow || eventWindow === statusWindow {
+            if eventWindow === popoverWindow || eventWindow === statusWindow || eventWindow === self.newDevicePrompt.panel {
                 return event
             }
 

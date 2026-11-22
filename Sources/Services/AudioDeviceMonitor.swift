@@ -21,6 +21,18 @@ private let _devicesListener: AudioObjectPropertyListenerProc = { _, _, _, _ in
     return noErr
 }
 
+struct AudioHardware {
+    var enumerate: () -> (output: [AudioDevice], input: [AudioDevice])
+    var getDefault: (_ input: Bool) -> AudioDeviceID
+    var setDefault: (_ id: AudioDeviceID, _ input: Bool) -> OSStatus
+
+    static let coreAudio = AudioHardware(
+        enumerate: CoreAudioBridge.enumeratePhysicalDevices,
+        getDefault: { CoreAudioBridge.getDefaultDevice(input: $0) },
+        setDefault: { CoreAudioBridge.setDefaultDevice($0, input: $1) }
+    )
+}
+
 /// Orchestrator: owns device lists + priority lists, registers CoreAudio
 /// listeners, asserts priority, and forwards volume/mute sync to the
 /// dedicated services.
@@ -30,6 +42,7 @@ final class AudioDeviceMonitor: ObservableObject {
 
     @Published var outputDevices: [AudioDevice] = []
     @Published var inputDevices: [AudioDevice] = []
+    @Published private(set) var defaultOutputID: AudioDeviceID = 0
 
     @Published var priorityOutputList: [PriorityDevice] = [] {
         didSet { repository.scheduleSaveOutputs(priorityOutputList) }
@@ -53,6 +66,7 @@ final class AudioDeviceMonitor: ObservableObject {
     let volume: AudioVolumeService
     let mute: AudioMuteService
     private let repository: PriorityListRepository
+    private let hardware: AudioHardware
 
     // MARK: - Property addresses (stored once)
 
@@ -63,6 +77,10 @@ final class AudioDeviceMonitor: ObservableObject {
     // BT-retry work items — cancelled on every new device-list event so rapid
     // connect/disconnect cycles don't pile up stale closures on the main queue.
     private var retryItems: [DispatchWorkItem] = []
+
+    var onNewOutputDevice: ((AudioDevice) -> Void)?
+    private var hasEnumerated = false
+    var promptsSuppressedUntil = Date.distantPast
 
     // MARK: - Computed
 
@@ -75,10 +93,11 @@ final class AudioDeviceMonitor: ObservableObject {
 
     // MARK: - Init
 
-    init(volume: AudioVolumeService, mute: AudioMuteService, repository: PriorityListRepository) {
+    init(volume: AudioVolumeService, mute: AudioMuteService, repository: PriorityListRepository, hardware: AudioHardware = .coreAudio) {
         self.volume = volume
         self.mute = mute
         self.repository = repository
+        self.hardware = hardware
         self.guardEnabled = UserDefaults.standard.object(forKey: Constants.DefaultsKey.guardEnabled) as? Bool ?? true
         self.priorityOutputList = repository.loadOutputs()
         self.priorityInputList = repository.loadInputs()
@@ -113,10 +132,41 @@ final class AudioDeviceMonitor: ObservableObject {
     // MARK: - Device refresh
 
     func refreshDevices() {
-        let (out, inp) = CoreAudioBridge.enumeratePhysicalDevices()
+        let (out, inp) = hardware.enumerate()
+        let previousOutputUIDs = Set(outputDevices.map(\.uid))
+        let isInitial = !hasEnumerated
+        hasEnumerated = true
         outputDevices = out
         inputDevices = inp
         reconcilePriorityLists()
+        syncAudioState()
+
+        guard !isInitial, Date() >= promptsSuppressedUntil else { return }
+        for device in out where !previousOutputUIDs.contains(device.uid) {
+            if guardEnabled && currentPriorityOutput?.uid == device.uid { continue }
+            if !guardEnabled && hardware.getDefault(false) == device.id { continue }
+            onNewOutputDevice?(device)
+        }
+    }
+
+    func pairedInput(for output: AudioDevice) -> AudioDevice? {
+        if let sameDevice = inputDevices.first(where: { $0.uid == output.uid }) { return sameDevice }
+        if output.uid.hasSuffix(":output") {
+            let inputUID = output.uid.dropLast(":output".count) + ":input"
+            return inputDevices.first { $0.uid == inputUID }
+        }
+        return inputDevices.first { !output.modelUID.isEmpty && $0.modelUID == output.modelUID && $0.name == output.name }
+    }
+
+    func switchTo(_ device: AudioDevice, input: Bool) {
+        guard let live = (input ? inputDevices : outputDevices).first(where: { $0.uid == device.uid }) else { return }
+        let list: ReferenceWritableKeyPath<AudioDeviceMonitor, [PriorityDevice]> = input ? \.priorityInputList : \.priorityOutputList
+        self[keyPath: list].removeAll { AudioDeviceIdentityResolver.matchDevice(for: $0, in: [live], input: input) != nil }
+        self[keyPath: list].insert(PriorityDevice(device: live, input: input), at: 0)
+        let err = hardware.setDefault(live.id, input)
+        if err != noErr {
+            NSLog("[SoundLock] setDefault failed (input=%d, deviceID=%d): OSStatus %d", input, live.id, err)
+        }
         syncAudioState()
     }
 
@@ -169,6 +219,10 @@ final class AudioDeviceMonitor: ObservableObject {
     func handleDeviceChange(input: Bool) {
         assertPriority(input: input)
         syncAudioState()
+        if !input {
+            let current = hardware.getDefault(false)
+            if current != defaultOutputID { defaultOutputID = current }
+        }
     }
 
     func handleDeviceListChange() {
@@ -184,8 +238,9 @@ final class AudioDeviceMonitor: ObservableObject {
         for (index, delay) in Constants.Timing.btRecoveryDelays.enumerated() {
             let shouldRefresh = (index == 0)
             let item = DispatchWorkItem { [weak self] in
-                guard let self, self.guardEnabled else { return }
+                guard let self else { return }
                 if shouldRefresh { self.refreshDevices() }
+                guard self.guardEnabled else { return }
                 self.assertPriority(input: false)
                 self.assertPriority(input: true)
             }
@@ -208,9 +263,9 @@ final class AudioDeviceMonitor: ObservableObject {
         guard let bestEntry = list.first(where: { AudioDeviceIdentityResolver.matchDevice(for: $0, in: connected, input: input) != nil }),
               let bestDevice = AudioDeviceIdentityResolver.matchDevice(for: bestEntry, in: connected, input: input)
         else { return }
-        let current = CoreAudioBridge.getDefaultDevice(input: input)
+        let current = hardware.getDefault(input)
         if current != bestDevice.id {
-            let err = CoreAudioBridge.setDefaultDevice(bestDevice.id, input: input)
+            let err = hardware.setDefault(bestDevice.id, input)
             if err != noErr {
                 NSLog("[SoundLock] setDefault failed (input=%d, deviceID=%d): OSStatus %d", input, bestDevice.id, err)
             }
