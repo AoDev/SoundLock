@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var globalEventMonitor: Any?
     private var localEventMonitor: Any?
     private var guardStateObserver: AnyCancellable?
+    private var popoverClosedAt = Date.distantPast
 
     private let repository = PriorityListRepository()
     private let volume = AudioVolumeService()
@@ -124,6 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             button.imageScaling = .scaleProportionallyUpOrDown
             button.action = #selector(togglePopover(_:))
             button.target = self
+            button.sendAction(on: .leftMouseDown)
         }
     }
 
@@ -199,13 +201,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func popoverDidClose(_ notification: Notification) {
+        popoverClosedAt = Date()
         stopEventMonitors()
     }
 
     @objc func togglePopover(_ sender: Any?) {
         if popover?.isShown == true {
             closePopover(sender)
-        } else {
+        } else if Date().timeIntervalSince(popoverClosedAt) > Constants.Timing.popoverReopenGuard {
             showPopover()
         }
     }

@@ -9,6 +9,7 @@ enum Constants {
         static let btRecoveryDelays: [TimeInterval] = [0.5, 1.5, 3.5]
         static let newDevicePromptDuration: TimeInterval = 5
         static let wakePromptSuppression: TimeInterval = 10
+        static let popoverReopenGuard: TimeInterval = 0.25
     }
 
     enum UI {
